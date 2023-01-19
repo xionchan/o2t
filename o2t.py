@@ -35,7 +35,7 @@ class Trans_Ora_DDL:
 
         if options == 'include': 
             with open(tablefile, 'r') as f: 
-                check_table_list = [table_name.strip().upper() for table_name in f if not re.search(r'^#', table_name)] 
+                check_table_list = [table_name.strip() for table_name in f if not re.search(r'^#', table_name)] 
             # Check whether all tables in tablefile exist in the database
             sql_check_exist = """
                                 SELECT 
@@ -58,7 +58,7 @@ class Trans_Ora_DDL:
                     sys.exit()
         elif options == 'exclude':
             with open(tablefile, 'r') as f: 
-                 check_table_list = [table_name.strip().upper() for table_name in f if not re.search(r'^#', table_name)]
+                 check_table_list = [table_name.strip() for table_name in f if not re.search(r'^#', table_name)]
             sql_get_table = """
                                 SELECT 
                                     table_name 
@@ -813,6 +813,7 @@ def export_all_ddl(tablelist, parallel):
                                 targetcur.execute(ddl)
                             except Exception as err:
                                 print("Skip table '{0}'.'{1}'. Error: {2}".format(owner, table[1], str(err)))
+                                print(ddl)
                                 break
                     elif re.search(r'^$', ddl):
                         continue
@@ -849,8 +850,9 @@ def parallel_export(parallel, options, tablefile):
                 thread = threading.Thread(target=export_all_ddl, args=(transf_table_list[int(thread_num*len(transf_table_list)/parallel):], thread_num+1, ))
             else:
                 thread = threading.Thread(target=export_all_ddl, args=(transf_table_list[int(thread_num*len(transf_table_list)/parallel):int((thread_num+1)*len(transf_table_list)/parallel)], thread_num+1, ))
-        threads.append(thread)
-        thread.start()
+        
+            threads.append(thread)
+            thread.start()
     
         for thread in threads:
             thread.join()
@@ -1128,10 +1130,10 @@ if __name__ == '__main__':
     print(task_info)
 
     if command_line_args['setting']['include'] is not None:
-        parallel_export(command_line_args['setting']['parallel'], options='include', tablefile=command_line_args['setting']['include'])
+        parallel_export(parallel, options='include', tablefile=command_line_args['setting']['include'])
     elif command_line_args['setting']['exclude'] is not None:
-        parallel_export(command_line_args['setting']['parallel'], options='exclude', tablefile=command_line_args['setting']['exclude'])
+        parallel_export(parallel, options='exclude', tablefile=command_line_args['setting']['exclude'])
     else:
-        parallel_export(command_line_args['setting']['parallel'], options=None, tablefile=None)
+        parallel_export(parallel, options=None, tablefile=None)
     
     print('Transfer job successfully completed at ' + datetime.datetime.now().strftime('%a %b %d %H:%M:%S %Y'))
