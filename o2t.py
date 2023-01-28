@@ -20,11 +20,47 @@ class Trans_Ora_DDL:
         Separate treatment column, primary, comment, partition.etc 
         And then splice it together
     """
-    def __init__(self):
+    def __init__(self, **param):
         self.connect=''
         self.cursor=''
-        self.status=False 
-       
+        self.dbtype = param['dbtype']
+        self.owner = param['owner']
+        self.directory = param['directory']
+        self.content = param['content']
+        
+        # Get information from sqlite
+        sql_get_rule = """
+                        SELECT
+                            rulematch, rulereplace, ruleparameters
+                        FROM
+                            o2t_rule
+                        WHERE
+                            dbtype='{0}'
+                        AND
+                            ruletype='datatype'
+                       """.format(self.dbtype) 
+        
+        sql_get_reservewords = """
+                            SELECT
+                                reserveword
+                            FROM
+                                o2t_reservewords
+                            WHERE
+                                dbtype='{0}'
+                                """.format('mysql' if self.dbtype == 'tdsql' else 'postgresql') 
+        
+        try:
+            sqlitedb = sqlite3.connect("o2t.db")
+            sqlitecursor = sqlitedb.cursor()
+            sqlitecursor.execute(sql_get_rule)
+            self.rulelist = sqlitecursor.fetchall()
+            sqlitecursor.execute(sql_get_reservewords)
+            self.reservewords_list = [i[0] for i in sqlitecursor.fetchall()]
+            sqlitedb.close()
+        except Exception as err:
+            print(err)
+            sys.exit()
+     
     def get_table_list(self, options, tablefile):
         """
         Check whether all export tables exist.
@@ -46,7 +82,7 @@ class Trans_Ora_DDL:
                                     owner = '{0}'
                                 AND
                                     table_name in {1}
-                              """.format(owner, \
+                              """.format(self.owner, \
                                          str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',',''))
             
             self.cursor.execute(sql_check_exist)
@@ -68,15 +104,15 @@ class Trans_Ora_DDL:
                                     owner = '{0}'
                                 AND
                                     table_name not in{1}
-                            """.format(owner,  \
+                            """.format(self.owner,  \
                                        str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',',''))
             
             self.cursor.execute(sql_get_table)
             check_table_list = [ i[0] for i in self.cursor.fetchall() ]
         
         # Check whether all tables have primary keys
-        if content != 'index':
-            if dbtype == 'tdsql':
+        if self.content != 'index':
+            if self.dbtype == 'tdsql':
                 if options:
                     sql_check_primary = """
                                             SELECT 
@@ -99,7 +135,7 @@ class Trans_Ora_DDL:
                                                 owner = '{0}'
                                             AND 
                                                 status <> 'DISABLED')
-                                        """.format(owner, \
+                                        """.format(self.owner, \
                                                    str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',',''))
                 else:
                     sql_check_primary = """
@@ -121,7 +157,7 @@ class Trans_Ora_DDL:
                                                 owner = '{0}'
                                             AND 
                                                 status <> 'DISABLED')
-                                        """.format(owner)
+                                        """.format(self.owner)
 
                 self.cursor.execute(sql_check_primary)
                 no_primary_list = [i[0] for i in self.cursor.fetchall()]
@@ -138,7 +174,7 @@ class Trans_Ora_DDL:
                                     all_tables 
                                 WHERE
                                     owner = '{0}'
-                             """.format(owner) + \
+                             """.format(self.owner) + \
                                 (('AND table_name in {0}'.format(str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',','')) if options else ''))
         
         self.cursor.execute(sql_get_table_list)
@@ -170,7 +206,7 @@ class Trans_Ora_DDL:
                                 a.table_name = '{1}'
                             ORDER BY 
                                 column_id
-                        """.format(owner, tablename)
+                        """.format(self.owner, tablename)
 
         self.cursor.execute(sql_get_column)
         column_info_list = self.cursor.fetchall()
@@ -183,9 +219,9 @@ class Trans_Ora_DDL:
             
             # Construct the column comment 
             if column_info[6] is not None: 
-                if dbtype == 'tdsql':
+                if self.dbtype == 'tdsql':
                     column_str = column_str + " comment '" + column_info[6] + "'"
-                elif dbtype == 'tbase':
+                elif self.dbtype == 'tbase':
                     comment_sql = comment_sql + 'comment on column ' + tablename.lower() + '.' + \
                                   column_info[0].lower() + " is '" + column_info[6] + "';\n"
             
@@ -209,7 +245,7 @@ class Trans_Ora_DDL:
             
             # Transfer column
             transf_column_type =  column_type.lower()
-            for rule in rulelist:
+            for rule in self.rulelist:
                 break_flag = False
                 rulematch = "^" + rule[0].strip() + "$"
                 regex_result = re.match(rulematch,  column_type, re.IGNORECASE)
@@ -243,8 +279,16 @@ class Trans_Ora_DDL:
                                     break
                                 else:
                                     transf_column_type = rule[1].format(*data_list)
+            
+            if column_info[0].lower() in self.reservewords_list or len(column_info[0].split()) > 1:
+                if self.dbtype == 'tbase':
+                    column_name = '"' + column_info[0].lower() + '"'
+                elif self.dbtype == 'tdsql':
+                    column_name = '`' + column_info[0].lower() + '`' 
+            else:
+                column_name = column_info[0].lower()
                   
-            column_sql = column_sql + '    ' + column_info[0].lower() + ' ' + transf_column_type + column_str + ',\n'
+            column_sql = column_sql + '    ' + column_name + ' ' + transf_column_type + column_str + ',\n'
         
         return column_sql.rstrip(',\n'), comment_sql
         
@@ -271,7 +315,7 @@ class Trans_Ora_DDL:
                                 b.table_name = '{1}'
                             ORDER BY 
                                 a.column_position
-                         """.format(owner, tablename)
+                         """.format(self.owner, tablename)
         
         self.cursor.execute(sql_get_primary)
         primary_key_list = self.cursor.fetchall()
@@ -290,7 +334,7 @@ class Trans_Ora_DDL:
                                             name = '{1}'
                                         ORDER BY 
                                             column_position
-                                       """.format(owner, tablename)
+                                       """.format(self.owner, tablename)
                 self.cursor.execute(sql_get_partitionkey)
                 for part_key in self.cursor.fetchall():
                     if part_key[0] not in primary_key_list[:][0]:
@@ -320,15 +364,15 @@ class Trans_Ora_DDL:
                                     owner = '{0}' 
                                 AND 
                                     table_name = '{1}'
-                             """.format(owner, tablename)
+                             """.format(self.owner, tablename)
         
         self.cursor.execute(sql_get_tabcomment)
         table_comment_list = self.cursor.fetchone()
 
         if table_comment_list[0] is not None:
-            if dbtype == 'tdsql':
+            if self.dbtype == 'tdsql':
                 table_comment_sql = "  comment = '" + table_comment_list[0] + "'"
-            elif dbtype == 'tbase':
+            elif self.dbtype == 'tbase':
                 table_comment_sql = 'comment on table ' + tablename.lower() + " is '" + table_comment_list[0] + "';\n"
         else:
             table_comment_sql = None
@@ -349,7 +393,7 @@ class Trans_Ora_DDL:
                                 owner = '{0}'
                             AND 
                                 table_name = '{1}'
-                           """.format(owner, tablename)  
+                           """.format(self.owner, tablename)  
         
         sql_get_partkey = """
                             SELECT
@@ -361,7 +405,7 @@ class Trans_Ora_DDL:
                             AND
                                 name = '{1}'
                             ORDER BY column_position
-                          """.format(owner, tablename)  
+                          """.format(self.owner, tablename)  
         
         self.cursor.execute(sql_get_parttype)
         parttype = self.cursor.fetchone()[0].lower()
@@ -380,7 +424,7 @@ class Trans_Ora_DDL:
                                 table_owner = '{0}'
                             AND
                                 table_name = '{1}'
-                           """.format(owner, tablename)
+                           """.format(self.owner, tablename)
             
         self.cursor.execute(sql_get_partinfo)
         partinfo_dict = {x[0]:x[1] for x in self.cursor.fetchall()}
@@ -394,7 +438,7 @@ class Trans_Ora_DDL:
                     if match:
                         partinfo_dict[partiton_name] = "'" + match.group() + "'"
             
-        if dbtype == 'tdsql':
+        if self.dbtype == 'tdsql':
             if parttype == 'hash':
                 partition_sql = 'partition by hash' +  partkey + ' (\n'
                 for partition_name in partinfo_dict.keys():
@@ -409,7 +453,7 @@ class Trans_Ora_DDL:
                     partition_sql = partition_sql + ' partition ' + partition_name.lower() + " values less than (" + partition_value + "),\n"
                 
             partition_sql = partition_sql.rstrip(',\n') + ')'      
-        elif dbtype == 'tbase':
+        elif self.dbtype == 'tbase':
             partition_sql = 'partition by ' + parttype + partkey + '; \n\n'
             if parttype == 'hash':
                 part_num = 0
@@ -447,7 +491,7 @@ class Trans_Ora_DDL:
                                     owner = '{0}'
                                 AND
                                     table_name = '{1}'
-                             """.format(owner, tablename)
+                             """.format(self.owner, tablename)
         
         self.cursor.execute(sql_get_constraint)
         constraint_list = [ i for i in self.cursor.fetchall() ]
@@ -493,7 +537,7 @@ class Trans_Ora_DDL:
                                         AND c.table_name = '{1}'
                                 ) 
                             ORDER BY 1,4
-                        """.format(owner, tablename)
+                        """.format(self.owner, tablename)
         
         self.cursor.execute(sql_get_index)
         index_info_list = {}
@@ -521,7 +565,7 @@ class Trans_Ora_DDL:
 	                                owner = '{0}'
 	                                AND name = '{1}'
                                     ORDER BY column_position
-                              """.format(owner, tablename)
+                              """.format(self.owner, tablename)
             
             self.cursor.execute(sql_get_partkey)
             partkey_list = self.cursor.fetchall() 
@@ -568,7 +612,7 @@ class Trans_Ora_DDL:
 	                            AND a.index_type = 'NORMAL'
 	                            AND a.owner = '{0}'
 	                            AND a.uniqueness = 'NONUNIQUE'
-                        """.format(owner) + \
+                        """.format(self.owner) + \
                             ('AND a.TABLE_NAME IN {0}'.format(str(tuple(table_list)) if len(table_list) > 1 else str(tuple(table_list)).replace(',','')) if options is not None else '') + \
                             ' ORDER BY 1, 2, 5'
         
@@ -605,7 +649,7 @@ class Trans_Ora_DDL:
                                         AND owner = '{0}')
                                 AND a.table_name NOT IN {1}
                                 ORDER BY 1, 2, 5
-                        """.format(owner, \
+                        """.format(self.owner, \
                         part_table_list if isinstance(part_table_list, str) else str(part_table_list) if len(part_table_list) > 1 else str(part_table_list).replace(',',''))
 
         self.cursor.execute(sql_get_index) 
@@ -640,7 +684,7 @@ class Trans_Ora_DDL:
 		                                AND owner = '{0}'
 		                                AND table_name = '{1}')
                                     ORDER BY 1, 2, 5
-                            """.format(owner, part_table)
+                            """.format(self.owner, part_table)
             
             self.cursor.execute(sql_get_index) 
             index_list = self.cursor.fetchall()
@@ -654,7 +698,7 @@ class Trans_Ora_DDL:
 	                                owner = '{0}'
 	                                AND name = '{1}'
                                     ORDER BY column_position
-                              """.format(owner, part_table)
+                              """.format(self.owner, part_table)
             
             self.cursor.execute(sql_get_partkey)
             partkey_list = self.cursor.fetchall() 
@@ -700,7 +744,7 @@ class Trans_Ora_DDL:
         
         index_sql = index_sql + ');\n'
 
-        f = open(directory + '/' + owner.lower() + '_index.sql', 'wb')
+        f = open(self.directory + '/' + self.owner.lower() + '_index.sql', 'wb')
         f.write(index_sql.encode('utf-8'))
         f.write('\n\n'.encode('utf-8'))
         f.close()
@@ -718,10 +762,10 @@ class Trans_Ora_DDL:
         
         ddl_str = 'create table ' + tablename.lower() + '(\n' + column_sql + ((',\n' + primary_sql) if primary_sql else '') + \
                   ((',\n' + constraint_sql) if constraint_sql else '') + ')\n'
-        if dbtype == 'tdsql':
+        if self.dbtype == 'tdsql':
             ddl_str = ddl_str + '  engine = innodb\n' + ((table_comment_sql + '\n') if table_comment_sql else '') + \
                       (partition_sql if partitioned == 'YES' else '') + ';\n'
-        elif dbtype == 'tbase':
+        elif self.dbtype == 'tbase':
             ddl_str = ddl_str + (partition_sql if partitioned == 'YES' else ';\n') + \
                       (comment_sql if comment_sql is not None else '') + \
                       (table_comment_sql if table_comment_sql is not None else '')
@@ -753,76 +797,56 @@ class Trans_Ora_DDL:
             except:
                 self.status=False
 
-def load_rule():
-    """
-    Get the conversion rule information list from the database.
-    """
-    sqlitedb = sqlite3.connect("o2t.db")
-    sqlitecursor = sqlitedb.cursor()
-    sql_get_rule = """
-                        SELECT
-                            rulematch, rulereplace, ruleparameters
-                        FROM
-                            o2t_rule
-                        WHERE
-                            dbtype='{0}'
-                        AND
-                            ruletype='datatype'
-                   """.format(dbtype) 
-    sqlitecursor.execute(sql_get_rule)
-    rulelist = sqlitecursor.fetchall()
-    
-    sqlitecursor.close()
-    sqlitedb.close()
-
-    return rulelist
-
-def export_all_ddl(tablelist, parallel):
+def export_all_ddl(**param):
     """
     Convert DDL statement of input table list
     """
-    sourcedb = Trans_Ora_DDL()
+    ora_param = {'dbtype' : param['dbtype'], \
+                 'owner' : param['owner'], \
+                 'directory' : param['directory'], \
+                 'content' : param['content']}
+    sourcedb = Trans_Ora_DDL(**ora_param)
     sourcedb.open()
-    if mode == 'direct':
-        if dbtype == 'tdsql':
+    if param['mode'] == 'direct':
+        if param['dbtype'] == 'tdsql':
             target_db = pymysql.connect(**target_conn)
-        elif dbtype == 'tbase':
+        elif param['dbtype'] == 'tbase':
             target_db = psycopg2.connect(**target_conn)
 
         target_db.autocommit = True
         
         with target_db.cursor() as targetcur:
-            for table in tablelist:
-                print("Processing table '{0}'.'{1}'...".format(owner,table[1]))
-                if content == 'table':
+            for table in param['tablelist']:
+                print("Processing table '{0}'.'{1}'...".format(param['owner'],table[1]))
+                if param['content'] == 'table':
                     ddl_str = sourcedb.trans_single_ddl(table[1], table[2])
-                elif content == 'index':
+                elif param['content'] == 'index':
                     ddl_str = sourcedb.transf_single_index(table[1], table[2])
-                elif content == 'all':
+                elif param['content'] == 'all':
                     ddl_str = sourcedb.trans_single_ddl(table[1], table[2])
                     if sourcedb.transf_single_index(table[1], table[2]) is not None :
                         ddl_str = ddl_str + sourcedb.transf_single_index(table[1], table[2])
 
                 for ddl in ddl_str.split(';\n'):
                     if re.search(r'^create table', ddl):
-                        if table_exists_action == 'drop':
+                        if param['table_exists_action'] == 'drop':
                             targetcur.execute('drop table if exists {0}'.format(table[1]))
                             targetcur.execute(ddl)
-                        elif table_exists_action == 'skip':
+                        elif param['table_exists_action'] == 'skip':
                             try:
                                 targetcur.execute(ddl)
                             except Exception as err:
-                                print("Skip table '{0}'.'{1}'. Error: {2}".format(owner, table[1], str(err)))
+                                print("Skip table '{0}'.'{1}'. Error: {2}".format(param['owner'], table[1], str(err)))
                                 print(ddl)
                                 break
                     elif re.search(r'^$', ddl):
                         continue
                     else:
                         targetcur.execute(ddl)               
-    elif mode == 'file':
-        f = open(directory + '/' + owner.lower() + str(parallel) + '.sql', 'wb')
+    elif param['mode'] == 'file':
+        f = open(param['directory'] + '/' + param['owner'].lower() + str(param['parallel']) + '.sql', 'wb')
     
-        for table in tablelist:
+        for table in param['tablelist']:
             ddl_str = sourcedb.trans_single_ddl(table[1], table[2])
             f.write(ddl_str.encode('utf-8'))
             f.write('\n\n'.encode('utf-8'))
@@ -832,24 +856,38 @@ def export_all_ddl(tablelist, parallel):
     sourcedb.close()
     target_db.close()
 
-def parallel_export(parallel, options, tablefile):
+def parallel_export(**param):
     """
     Convert DDL statement of all table
     """
     # get table list
-    ora = Trans_Ora_DDL()
+    ora_param = {'dbtype' : param['dbtype'], \
+                 'owner' : param['owner'], \
+                 'directory' : param['directory'], \
+                 'content' : param['content']}
+    ora = Trans_Ora_DDL(**ora_param)
     ora.open()
-    transf_table_list = ora.get_table_list(options, tablefile)
-    if mode == 'file' and content in ('all', 'index'):
-        ora.transf_index(options, transf_table_list)
+    transf_table_list = ora.get_table_list(param['options'], param['tablefile'])
+    if param['mode'] == 'file' and param['content'] in ('all', 'index'):
+        ora.transf_index(param['options'], transf_table_list)
     else:
         threads = []
 
-        for thread_num in range(parallel):
-            if thread_num == parallel - 1:
-                thread = threading.Thread(target=export_all_ddl, args=(transf_table_list[int(thread_num*len(transf_table_list)/parallel):], thread_num+1, ))
+        export_all_ddl_param = {'dbtype' : param['dbtype'], \
+                                'owner' : param['owner'], \
+                                'mode' : param['mode'], \
+                                'content' : param['content'], \
+                                'table_exists_action' : param['table_exists_action'], \
+                                'directory' : param['directory']}
+
+        for thread_num in range(param['parallel']):
+            export_all_ddl_param['parallel_num'] = thread_num + 1
+            if thread_num == param['parallel'] - 1:
+                export_all_ddl_param['tablelist'] = transf_table_list[int(thread_num*len(transf_table_list)/param['parallel']):]
             else:
-                thread = threading.Thread(target=export_all_ddl, args=(transf_table_list[int(thread_num*len(transf_table_list)/parallel):int((thread_num+1)*len(transf_table_list)/parallel)], thread_num+1, ))
+                export_all_ddl_param['tablelist'] = transf_table_list[int(thread_num*len(transf_table_list)/param['parallel']):int((thread_num+1)*len(transf_table_list)/param['parallel'])]
+            
+            thread = threading.Thread(target=export_all_ddl, kwargs=export_all_ddl_param)
         
             threads.append(thread)
             thread.start()
@@ -1048,30 +1086,6 @@ if __name__ == '__main__':
     title = "\nO2t:  Version 1.0 From chenxw 2022 - Production on" + datetime.datetime.now().strftime('%a %b %d %H:%M:%S %Y')
     print(title + '\n')
     command_line_args = command_parse()
-    
-    global dbtype
-    dbtype = command_line_args['target']['dbtype']
-
-    global owner
-    owner = command_line_args['setting']['schema']
-
-    global rulelist
-    rulelist = load_rule()
-
-    global directory
-    directory = command_line_args['setting']['directory']
-
-    global content 
-    content = command_line_args['setting']['content']
-
-    global mode 
-    mode =  command_line_args['setting']['mode']
-
-    global parallel 
-    parallel = command_line_args['setting']['parallel']
-
-    global table_exists_action
-    table_exists_action = command_line_args['setting']['table_exists_action']
 
     global source_conn
     source_conn = {'user':command_line_args['source']['username'], \
@@ -1100,19 +1114,19 @@ if __name__ == '__main__':
         print(err)
         sys.exit()
     
-    if mode == 'direct':
+    if command_line_args['setting']['mode'] == 'direct':
         try:
-            targetdb = pymysql.connect(**target_conn) if dbtype == 'tdsql' else psycopg2.connect(**target_conn)
+            targetdb = pymysql.connect(**target_conn) if command_line_args['target']['dbtype'] == 'tdsql' else psycopg2.connect(**target_conn)
             with targetdb.cursor() as targetcur:
                 targetcur.execute('select version()')
                 version_info = targetcur.fetchone()
                 print('Connected to target: ' + version_info[0])
             targetdb.close()
         except Exception as err:
-            print('Connected to target {0} {1} failed!'.format(dbtype, str(target_conn)))
+            print('Connected to target {0} {1} failed!'.format(command_line_args['target']['dbtype'], str(target_conn)))
             print(err)
             sys.exit()
-    elif mode =='file':
+    elif command_line_args['setting']['mode'] =='file':
         if not os.path.exists(command_line_args['setting']['directory']):
             os.makedirs(command_line_args['setting']['directory'])
     
@@ -1120,20 +1134,37 @@ if __name__ == '__main__':
             print('Directory {0} is not empty!'.format(command_line_args['setting']['directory']))
             sys.exit()
 
-    task_info = '\nStarting transfer ' + command_line_args['source']['host'] + ' schema {0}'.format(content if content != 'all' else 'table and index') + ' to ' 
+    task_info = '\nStarting transfer ' + command_line_args['source']['host'] + ' schema {0}'.format(command_line_args['setting']['content'] if command_line_args['setting']['content'] != 'all' else 'table and index') + ' to ' 
 
-    if mode == 'file':
-        task_info = task_info + ' file {0}'.format(directory)
+    if command_line_args['setting']['mode'] == 'file':
+        task_info = task_info + ' file {0}'.format(command_line_args['setting']['directory'])
     else:
         task_info = task_info + command_line_args['target']['host'] + ' dbname ' + command_line_args['target']['dbname'] 
 
     print(task_info)
 
+    parallel_export_param = {'parallel' : command_line_args['setting']['parallel'], \
+            'dbtype' : command_line_args['target']['dbtype'], \
+            'owner' : command_line_args['setting']['schema'], \
+            'mode' : command_line_args['setting']['mode'], \
+            'content' : command_line_args['setting']['content'], \
+            'table_exists_action' : command_line_args['setting']['table_exists_action'], \
+            'directory' : command_line_args['setting']['directory']}
+
     if command_line_args['setting']['include'] is not None:
-        parallel_export(parallel, options='include', tablefile=command_line_args['setting']['include'])
+        parallel_export_param['tablefile'] = command_line_args['setting']['include']
+        parallel_export_param['options'] = 'include'
     elif command_line_args['setting']['exclude'] is not None:
-        parallel_export(parallel, options='exclude', tablefile=command_line_args['setting']['exclude'])
+        parallel_export_param['tablefile'] = command_line_args['setting']['exclude']
+        parallel_export_param['options'] = 'exclude'
     else:
-        parallel_export(parallel, options=None, tablefile=None)
+        parallel_export_param['tablefile'] = None 
+        parallel_export_param['options'] = None
+    
+    try:
+        parallel_export(**parallel_export_param)
+    except Exception as err:
+        print(err)
+        sys.exit()
     
     print('Transfer job successfully completed at ' + datetime.datetime.now().strftime('%a %b %d %H:%M:%S %Y'))
