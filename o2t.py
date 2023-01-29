@@ -40,26 +40,46 @@ class Trans_Ora_DDL:
                             ruletype='datatype'
                        """.format(self.dbtype) 
         
-        sql_get_reservewords = """
+        sql_get_default = """
                             SELECT
-                                reserveword
+                                rulematch, rulereplace
                             FROM
-                                o2t_reservewords
+                                o2t_rule
                             WHERE
-                                dbtype='{0}'
-                                """.format('mysql' if self.dbtype == 'tdsql' else 'postgresql') 
+                                dbtype = '{0}'
+                            AND
+                                ruletype <> 'datatype'
+                          """.format(self.dbtype) 
         
         try:
             sqlitedb = sqlite3.connect("o2t.db")
             sqlitecursor = sqlitedb.cursor()
             sqlitecursor.execute(sql_get_rule)
             self.rulelist = sqlitecursor.fetchall()
-            sqlitecursor.execute(sql_get_reservewords)
-            self.reservewords_list = [i[0] for i in sqlitecursor.fetchall()]
+            sqlitecursor.execute(sql_get_default)
+            self.keywordlist = sqlitecursor.fetchall()
             sqlitedb.close()
         except Exception as err:
             print(err)
             sys.exit()
+        
+        # Get keyword
+        target_db = pymysql.connect(**target_conn) if self.dbtype == 'tdsql' else psycopg2.connect(**target_conn) 
+        sql_get_keyword = """
+                            SELECT  
+                                word
+                            FROM
+                          """ + 'information_schema.keywords WHERE reserved = 1' if self.dbtype == 'tdsql' else "pg_get_keywords() where catdesc = 'reserved'"
+        
+        try:
+            with target_db.cursor()as target_cur:
+                target_cur.execute(sql_get_keyword)
+                self.reservewords_list = [i[0] for i in target_cur.fetchall()]
+        except Exception as err:
+            print(err)
+            sys.exit()
+        finally:
+            target_db.close()
      
     def get_table_list(self, options, tablefile):
         """
@@ -190,22 +210,34 @@ class Trans_Ora_DDL:
         comment_sql = ''
         # Construct column
         sql_get_column = """
-                            SELECT 
-                                a.column_name, data_type, data_length, data_precision, nullif(data_scale, 0), nullable, b.comments, virtual_column
+                            SELECT
+	                            a.column_name,
+	                            data_type,
+	                            CASE
+		                            WHEN CHAR_COL_DECL_LENGTH IS NULL THEN data_length
+		                            ELSE CHAR_COL_DECL_LENGTH
+	                            END AS datalength,
+	                            data_precision,
+	                            NULLIF(data_scale,0),
+	                            nullable,
+	                            b.comments,
+	                            virtual_column,
+                                DATA_DEFAULT
                             FROM
-                                all_tab_cols a, all_col_comments b
+	                            all_tab_cols a,
+	                            all_col_comments b
                             WHERE
-                                a.table_name = b.table_name 
-                            AND 
-                                a.owner = b.owner 
-                            AND 
-                                a.column_name = b.column_name 
-                            AND 
-                                a.owner = '{0}'
-                            AND
-                                a.table_name = '{1}'
-                            ORDER BY 
-                                column_id
+	                            a.table_name = b.table_name
+	                            AND 
+                                    a.owner = b.owner
+	                            AND 
+                                    a.column_name = b.column_name
+	                            AND 
+                                    a.owner = '{0}'
+	                            AND
+                                    a.table_name = '{1}'
+                                ORDER BY
+	                                column_id
                         """.format(self.owner, tablename)
 
         self.cursor.execute(sql_get_column)
@@ -287,8 +319,35 @@ class Trans_Ora_DDL:
                     column_name = '`' + column_info[0].lower() + '`' 
             else:
                 column_name = column_info[0].lower()
-                  
-            column_sql = column_sql + '    ' + column_name + ' ' + transf_column_type + column_str + ',\n'
+            
+            if column_info[8] is not None:
+                default_sql = column_info[8]
+                if re.search(r"^'.*'$", column_info[8]):
+                    default_sql = ' default ' + default_sql
+                else:
+                    try:
+                        float(default_sql)
+                        default_sql = ' default ' + default_sql
+                    except ValueError:
+                        get_space = re.search(r'(\s*,\s*)', default_sql)
+                        for space in get_space.groups():
+                            default_sql = default_sql.replace(space, ',')
+
+                        for keyword in self.keywordlist:
+                            keywordmatch = "^" + keyword[0] + "$"
+                            keyword_regex = re.match(keywordmatch, default_sql, re.IGNORECASE)
+                            if keyword_regex:
+                                data_list = keyword_regex.groups()
+                                default_sql = ' default ' + keyword[1].format(**data_list)
+                            else:
+                                continue
+
+                if default_sql == column_info[8] :
+                    default_sql = ' default ' + default_sql
+                
+                column_sql = column_sql + '    ' + column_name + ' ' + transf_column_type + default_sql + column_str + ',\n'
+            else:
+                column_sql = column_sql + '    ' + column_name + ' ' + transf_column_type + column_str + ',\n'
         
         return column_sql.rstrip(',\n'), comment_sql
         
