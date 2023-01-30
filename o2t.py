@@ -67,9 +67,9 @@ class Trans_Ora_DDL:
         target_db = pymysql.connect(**target_conn) if self.dbtype == 'tdsql' else psycopg2.connect(**target_conn) 
         sql_get_keyword = """
                             SELECT  
-                                word
+                                lower(word)
                             FROM
-                          """ + 'information_schema.keywords WHERE reserved = 1' if self.dbtype == 'tdsql' else "pg_get_keywords() where catdesc = 'reserved'"
+                          """ + (' information_schema.keywords WHERE reserved = 1' if self.dbtype == 'tdsql' else " pg_get_keywords() where catdesc = 'reserved'")
         
         try:
             with target_db.cursor()as target_cur:
@@ -329,18 +329,27 @@ class Trans_Ora_DDL:
                         float(default_sql)
                         default_sql = ' default ' + default_sql
                     except ValueError:
-                        get_space = re.search(r'(\s*,\s*)', default_sql)
-                        for space in get_space.groups():
-                            default_sql = default_sql.replace(space, ',')
+                        if self.dbtype == 'tdsql':
+                            default_sql = '' 
+                        elif self.dbtype == 'tbase':
+                            get_space = re.search(r'(\s*,\s*)', default_sql)
+                            if get_space:
+                                for space in get_space.groups():
+                                    default_sql = default_sql.replace(space, ',')
 
-                        for keyword in self.keywordlist:
-                            keywordmatch = "^" + keyword[0] + "$"
-                            keyword_regex = re.match(keywordmatch, default_sql, re.IGNORECASE)
-                            if keyword_regex:
-                                data_list = keyword_regex.groups()
-                                default_sql = ' default ' + keyword[1].format(**data_list)
-                            else:
-                                continue
+                            for keyword in self.keywordlist:
+                                keywordmatch = "^" + keyword[0] + "$"
+                                keyword_regex = re.match(keywordmatch, default_sql, re.IGNORECASE)
+                                if keyword_regex:
+                                    data_list = keyword_regex.groups()
+                                    if len(data_list) == 0:
+                                        default_sql = ' default ' + keyword[1]
+                                        break
+                                    else:
+                                        default_sql = ' default ' + keyword[1].format(**data_list)
+                                        break
+                                else:
+                                    continue
 
                 if default_sql == column_info[8] :
                     default_sql = ' default ' + default_sql
@@ -399,12 +408,16 @@ class Trans_Ora_DDL:
                     if part_key[0] not in primary_key_list[:][0]:
                         primary_key_list.append((part_key[0], primary_key_list[0][1]))
 
-            constraint_name = primary_key_list[0][1] if not re.search(r'^SYS\_', primary_key_list[0][1]) else tablename.lower() + '_pk'
+            if primary_key_list[0][1].lower() in self.reservewords_list or len(primary_key_list[0][1].split()) > 1:
+                constraint_name = '`' + primary_key_list[0][1].lower() + '`'
+            else:
+                constraint_name = primary_key_list[0][1].lower() if not re.search(r'^SYS\_', primary_key_list[0][1]) else tablename.lower() + '_pk'
+
             key_str = ''
             for key in primary_key_list :
                 key_str = key_str + key[0].lower() + ','
             
-            primary_sql = '    constraint ' + constraint_name.lower() + ' primary key(' + key_str.rstrip(',') + ')'
+            primary_sql = '    constraint ' + constraint_name + ' primary key(' + key_str.rstrip(',') + ')'
         else:
             primary_sql = None
         
@@ -559,7 +572,12 @@ class Trans_Ora_DDL:
 
         if len(constraint_list) > 0:
             for constraint in constraint_list:
-                constraint_sql = constraint_sql + ('    constraint ' + constraint[0].lower() if not re.search(r'^SYS\_', constraint[0]) else '') + \
+                if constraint[0] in self.reservewords_list or len(constraint[0].split()) > 1:
+                    constraint_name = '`' + constraint[0].lower() + '`'
+                else:
+                    constraint_name = constraint[0].lower()
+                
+                constraint_sql = constraint_sql + ('    constraint ' + constraint_name if not re.search(r'^sys\_', constraint_name) else '') + \
                                  '   check(' + constraint[2] + '),\n'
         
             constraint_sql = constraint_sql.rstrip(',\n')
