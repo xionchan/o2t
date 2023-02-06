@@ -215,10 +215,13 @@ class Trans_Ora_DDL:
 	                            data_type,
 	                            CASE
 		                            WHEN CHAR_COL_DECL_LENGTH IS NULL THEN data_length
-		                            ELSE CHAR_COL_DECL_LENGTH
+		                            ELSE CHAR_LENGTH
 	                            END AS datalength,
 	                            data_precision,
-	                            NULLIF(data_scale,0),
+                                CASE
+                                    WHEN data_precision IS NULL AND DATA_SCALE IS NOT NULL THEN DATA_SCALE
+                                    ELSE NULLIF(data_scale, 0)
+	                            END AS data_scale,
 	                            nullable,
 	                            b.comments,
 	                            virtual_column,
@@ -321,16 +324,24 @@ class Trans_Ora_DDL:
                 column_name = column_info[0].lower()
             
             if column_info[8] is not None:
-                default_sql = column_info[8]
-                if re.search(r"^'.*'$", column_info[8]):
+                default_sql = column_info[8].strip()
+                if re.search(r"^'.*'$", default_sql):
                     default_sql = ' default ' + default_sql
                 else:
                     try:
                         float(default_sql)
                         default_sql = ' default ' + default_sql
-                    except ValueError:
+                    except Exception:
                         if self.dbtype == 'tdsql':
-                            default_sql = '' 
+                            if re.search(r'timestamp', default_sql, re.IGNORECASE) or re.search(r'date', default_sql, re.IGNORECASE):
+                                if default_sql.lower() == 'sysdate':
+                                    default_sql = ' default current_timestamp'
+                                elif default_sql.lower() == 'systimestamp':
+                                    default_sql = ' default current_timestamp'
+                                else:
+                                    default_sql = ' default ' + default_sql
+                            else:
+                                default_sql = '' 
                         elif self.dbtype == 'tbase':
                             get_space = re.search(r'(\s*,\s*)', default_sql)
                             if get_space:
@@ -626,11 +637,11 @@ class Trans_Ora_DDL:
         if partitioned == 'NO':
             for index_info in index_info_list.values():
                 for column_info in index_info:
-                    column_position = index_info[0][3]
+                    column_position = column_info[3]
                     if column_position == 1:
-                        index_sql = 'create' + (' unique ' if index_info[0][1] == 'UNIQUE' else ' ') +  'index ' + index_info[0][0].lower() + ' on ' + tablename.lower() + '(' + index_info[0][2].lower()
+                        index_sql = 'create' + (' unique ' if index_info[0][1] == 'UNIQUE' else ' ') +  'index ' + column_info[0].lower() + ' on ' + tablename.lower() + '(' + column_info[2].lower()
                     else:
-                        index_sql = index_sql + ',' + index_info[0][2].lower()
+                        index_sql = index_sql + ',' + column_info[2].lower()
                 index_sql = index_sql + ');\n'
         elif partitioned == 'YES':
             sql_get_partkey = """
@@ -649,7 +660,7 @@ class Trans_Ora_DDL:
 
             for index_info in index_info_list.values():
                 for column_info in index_info:
-                    column_position = index_info[0][3]
+                    column_position = column_info[3]
                     if column_position == 1:
                         index_sql = 'create' + (' unique ' if column_info[1] == 'UNIQUE' else ' ') +  'index ' + column_info[0].lower() + ' on ' + tablename.lower() + '(' + column_info[2].lower()
                     else:
@@ -662,7 +673,7 @@ class Trans_Ora_DDL:
                             index_sql = index_sql + ',' + partkey[0].lower()
 
                 index_sql = index_sql + ');\n'
-        
+
         return index_sql
 
     def transf_index(self, options, transf_table_list):
@@ -901,8 +912,9 @@ def export_all_ddl(**param):
                     ddl_str = sourcedb.transf_single_index(table[1], table[2])
                 elif param['content'] == 'all':
                     ddl_str = sourcedb.trans_single_ddl(table[1], table[2])
-                    if sourcedb.transf_single_index(table[1], table[2]) is not None :
-                        ddl_str = ddl_str + sourcedb.transf_single_index(table[1], table[2])
+                    index_str = sourcedb.transf_single_index(table[1], table[2])
+                    if index_str is not None :
+                        ddl_str = ddl_str + index_str
 
                 for ddl in ddl_str.split(';\n'):
                     if re.search(r'^create table', ddl):
