@@ -128,7 +128,7 @@ class Trans_Ora_DDL:
                                        str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',',''))
             
             self.cursor.execute(sql_get_table)
-            check_table_list = [ i[0] for i in self.cursor.fetchall() ]
+            check_table_list = [ (0,i[0]) for i in self.cursor.fetchall() ]
         
         # Check whether all tables have primary keys
         if self.content != 'index':
@@ -142,7 +142,7 @@ class Trans_Ora_DDL:
                                             WHERE   
                                                 owner = '{0}'
                                             AND 
-                                                table_name in{1}
+                                                (0,table_name) in{1}
                                             AND 
                                                 table_name not in (
                                             SELECT /*+ UNNEST */ 
@@ -195,7 +195,7 @@ class Trans_Ora_DDL:
                                 WHERE
                                     owner = '{0}'
                              """.format(self.owner) + \
-                                (('AND table_name in {0}'.format(str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',','')) if options else ''))
+                                (('AND (0,table_name) in {0}'.format(str(tuple(check_table_list)) if len(check_table_list) > 1 else str(tuple(check_table_list)).replace(',','')) if options else ''))
         
         self.cursor.execute(sql_get_table_list)
         transf_table_list = [i for i in self.cursor.fetchall()]
